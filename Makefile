@@ -26,6 +26,7 @@ SUBDIRS += traffic-pacing-edt
 SUBDIRS += AF_XDP-forwarding
 SUBDIRS += AF_XDP-example
 SUBDIRS += xdp-synproxy
+SUBDIRS += xdp-dnsrrl
 
 .PHONY: check_submodule help clobber distclean clean $(SUBDIRS)
 
