@@ -29,6 +29,7 @@ static const char *__doc__ =
 #include <limits.h>
 
 #include "json_writer.h"
+#include "util.h"
 #include "pping.h" //common structs for user-space and BPF parts
 #include "lhist.h"
 
@@ -785,24 +786,6 @@ static __u64 convert_monotonic_to_realtime(__u64 monotonic_time)
 		offset_updated = now_mon;
 	}
 	return monotonic_time + offset;
-}
-
-// Stolen from xdp-tool/lib/util/util.c
-int try_snprintf(char *buf, size_t buf_len, const char *format, ...)
-{
-	va_list args;
-	int len;
-
-	va_start(args, format);
-	len = vsnprintf(buf, buf_len, format, args);
-	va_end(args);
-
-	if (len < 0)
-		return -EINVAL;
-	else if ((size_t)len >= buf_len)
-		return -ENAMETOOLONG;
-
-	return 0;
 }
 
 /*

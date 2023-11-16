@@ -185,7 +185,7 @@ out:
 }
 
 
-int usage(const char *progname)
+static int usage(const char *progname)
 {
 	fprintf(stderr, "Usage: %s <ifname> [--unload] [--debug]\n", progname);
 	return 1;
