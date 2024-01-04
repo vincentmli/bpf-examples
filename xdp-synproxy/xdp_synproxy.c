@@ -52,7 +52,7 @@ static noreturn void cleanup()
 
 static noreturn void help(const char *progname)
 {
-	fprintf(stderr, "Usage: %s [--iface <iface>|--prog <prog_id>] [--mss4 <mss ipv4> --mss6 <mss ipv6> --wscale <wscale> --ttl <ttl>] [--ports <port1>,<port2>,...]\n",
+	fprintf(stderr, "Usage: %s [--iface <iface>|--prog <prog_id>] [--mss4 <mss ipv4> --mss6 <mss ipv6> --wscale <wscale> --ttl <ttl>]\n",
 		progname);
 	exit(1);
 }
@@ -71,7 +71,7 @@ static unsigned long parse_arg_ul(const char *progname, const char *arg, unsigne
 }
 
 static void parse_options(int argc, char *argv[], unsigned int *ifindex, __u32 *prog_id,
-			  __u64 *tcpipopts, char **ports)
+			  __u64 *tcpipopts)
 {
 	static struct option long_options[] = {
 		{ "help", no_argument, NULL, 'h' },
@@ -81,7 +81,6 @@ static void parse_options(int argc, char *argv[], unsigned int *ifindex, __u32 *
 		{ "mss6", required_argument, NULL, 6 },
 		{ "wscale", required_argument, NULL, 'w' },
 		{ "ttl", required_argument, NULL, 't' },
-		{ "ports", required_argument, NULL, 'p' },
 		{ NULL, 0, NULL, 0 },
 	};
 	unsigned long mss4, wscale, ttl;
@@ -94,7 +93,6 @@ static void parse_options(int argc, char *argv[], unsigned int *ifindex, __u32 *
 	*ifindex = 0;
 	*prog_id = 0;
 	*tcpipopts = 0;
-	*ports = NULL;
 
 	while (true) {
 		int opt;
@@ -132,9 +130,6 @@ static void parse_options(int argc, char *argv[], unsigned int *ifindex, __u32 *
 		case 't':
 			ttl = parse_arg_ul(argv[0], optarg, UINT8_MAX);
 			tcpipopts_mask |= 1 << 3;
-			break;
-		case 'p':
-			*ports = optarg;
 			break;
 		default:
 			help(argv[0]);
@@ -203,7 +198,7 @@ out:
 	return err;
 }
 
-static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd, int *ports_map_fd)
+static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd)
 {
 	struct bpf_prog_info prog_info;
 	__u32 map_ids[8];
@@ -213,7 +208,6 @@ static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd, int *ports
 	int i;
 
 	*values_map_fd = -1;
-	*ports_map_fd = -1;
 
 	prog_fd = bpf_prog_get_fd_by_id(prog_id);
 	if (prog_fd < 0) {
@@ -234,8 +228,8 @@ static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd, int *ports
 		goto out;
 	}
 
-	if (prog_info.nr_map_ids < 2) {
-		fprintf(stderr, "Error: Found %u BPF maps, expected at least 2\n",
+	if (prog_info.nr_map_ids < 1) {
+		fprintf(stderr, "Error: Found %u BPF maps, expected at least 1\n",
 			prog_info.nr_map_ids);
 		err = -ENOENT;
 		goto out;
@@ -264,14 +258,10 @@ static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd, int *ports
 			*values_map_fd = map_fd;
 			continue;
 		}
-		if (strcmp(map_info.name, "allowed_ports") == 0) {
-			*ports_map_fd = map_fd;
-			continue;
-		}
 		close(map_fd);
 	}
 
-	if (*values_map_fd != -1 && *ports_map_fd != -1) {
+	if (*values_map_fd != -1) {
 		err = 0;
 		goto out;
 	}
@@ -281,10 +271,7 @@ static int syncookie_open_bpf_maps(__u32 prog_id, int *values_map_fd, int *ports
 err_close_map_fds:
 	if (*values_map_fd != -1)
 		close(*values_map_fd);
-	if (*ports_map_fd != -1)
-		close(*ports_map_fd);
 	*values_map_fd = -1;
-	*ports_map_fd = -1;
 
 out:
 	close(prog_fd);
@@ -293,15 +280,14 @@ out:
 
 int main(int argc, char *argv[])
 {
-	int values_map_fd, ports_map_fd;
+	int values_map_fd;
 	__u64 tcpipopts;
 	bool firstiter;
 	__u64 prevcnt;
 	__u32 prog_id;
-	char *ports;
 	int err = 0;
 
-	parse_options(argc, argv, &ifindex, &prog_id, &tcpipopts, &ports);
+	parse_options(argc, argv, &ifindex, &prog_id, &tcpipopts);
 
 	if (prog_id == 0) {
 		err = syncookie_attach(ifindex);
@@ -310,40 +296,9 @@ int main(int argc, char *argv[])
 		prog_id = attached_prog_id;
 	}
 
-	err = syncookie_open_bpf_maps(prog_id, &values_map_fd, &ports_map_fd);
+	err = syncookie_open_bpf_maps(prog_id, &values_map_fd);
 	if (err < 0)
 		goto out;
-
-	if (ports) {
-		__u16 port_last = 0;
-		__u32 port_idx = 0;
-		char *p = ports;
-
-		fprintf(stderr, "Replacing allowed ports\n");
-
-		while (p && *p != '\0') {
-			char *token = strsep(&p, ",");
-			__u16 port;
-
-			port = parse_arg_ul(argv[0], token, UINT16_MAX);
-			err = bpf_map_update_elem(ports_map_fd, &port_idx, &port, BPF_ANY);
-			if (err != 0) {
-				fprintf(stderr, "Error: bpf_map_update_elem: %s\n", strerror(-err));
-				fprintf(stderr, "Failed to add port %u (index %u)\n",
-					port, port_idx);
-				goto out_close_maps;
-			}
-			fprintf(stderr, "Added port %u\n", port);
-			port_idx++;
-		}
-		err = bpf_map_update_elem(ports_map_fd, &port_idx, &port_last, BPF_ANY);
-		if (err != 0) {
-			fprintf(stderr, "Error: bpf_map_update_elem: %s\n", strerror(-err));
-			fprintf(stderr, "Failed to add the terminator value 0 (index %u)\n",
-				port_idx);
-			goto out_close_maps;
-		}
-	}
 
 	if (tcpipopts) {
 		__u32 key = 0;
@@ -357,7 +312,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	if ((ports || tcpipopts) && attached_prog_id == 0)
+	if ((tcpipopts) && attached_prog_id == 0)
 		goto out_close_maps;
 
 	prevcnt = 0;
@@ -382,7 +337,6 @@ int main(int argc, char *argv[])
 
 out_close_maps:
 	close(values_map_fd);
-	close(ports_map_fd);
 out:
 	return err == 0 ? 0 : 1;
 }

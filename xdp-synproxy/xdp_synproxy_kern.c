@@ -78,13 +78,6 @@ struct {
 	__uint(max_entries, 2);
 } values SEC(".maps");
 
-struct {
-	__uint(type, BPF_MAP_TYPE_ARRAY);
-	__type(key, __u32);
-	__type(value, __u16);
-	__uint(max_entries, MAX_ALLOWED_PORTS);
-} allowed_ports SEC(".maps");
-
 /* Some symbols defined in net/netfilter/nf_conntrack_bpf.c are unavailable in
  * vmlinux.h if CONFIG_NF_CONNTRACK=m, so they are redefined locally.
  */
@@ -317,31 +310,6 @@ static __always_inline void values_inc_synacks(void)
 	value = bpf_map_lookup_elem(&values, &key);
 	if (value)
 		__sync_fetch_and_add(value, 1);
-}
-
-static __always_inline bool check_port_allowed(__u16 port)
-{
-	__u32 i;
-
-	for (i = 0; i < MAX_ALLOWED_PORTS; i++) {
-		__u32 key = i;
-		__u16 *value;
-
-		value = bpf_map_lookup_elem(&allowed_ports, &key);
-
-		if (!value)
-			break;
-		/* 0 is a terminator value. Check it first to avoid matching on
-		 * a forbidden port == 0 and returning true.
-		 */
-		if (*value == 0)
-			break;
-
-		if (*value == port)
-			return true;
-	}
-
-	return false;
 }
 
 struct header_pointers {
@@ -725,10 +693,6 @@ static __always_inline int syncookie_part1(void *ctx, void *data, void *data_end
 	ret = tcp_lookup(ctx, hdr, xdp);
 	if (ret != XDP_TX)
 		return ret;
-
-	/* Pass to upper stack if port requires no syncookie handling */
-	if (!check_port_allowed(bpf_ntohs(hdr->tcp->dest)))
-		return XDP_PASS;
 
 	/* Packet is TCP and doesn't belong to an established connection. */
 
